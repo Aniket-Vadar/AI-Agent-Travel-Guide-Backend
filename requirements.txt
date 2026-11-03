@@ -1,0 +1,39 @@
+# ---- Web framework ----
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+sse-starlette==2.2.1
+
+# ---- Settings / validation ----
+pydantic==2.10.5
+pydantic-settings==2.7.1
+email-validator==2.2.0
+
+# ---- LangChain / agents / tracing ----
+langchain==0.3.14
+langchain-core==0.3.29
+langchain-community==0.3.14
+langchain-google-genai==2.0.8
+langgraph==0.2.62
+langsmith==0.2.10
+
+# ---- Data sources ----
+httpx==0.27.2
+wikipedia-api==0.7.1
+tenacity==9.0.0
+
+# ---- Persistence ----
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+greenlet==3.1.1
+alembic==1.14.0
+
+# ---- Media & PDF Generation ----
+gTTS>=2.5.0
+reportlab>=4.0.0
+
+# ---- Utils ----
+python-dotenv==1.0.1
+structlog==24.4.0
+orjson==3.10.14
+slowapi==0.1.9

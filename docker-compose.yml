@@ -1,0 +1,26 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wayfarer/travel-backend:1.0.0
+    container_name: wayfarer-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=production
+      - LOG_LEVEL=INFO
+    volumes:
+      - travel-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  travel-data:
