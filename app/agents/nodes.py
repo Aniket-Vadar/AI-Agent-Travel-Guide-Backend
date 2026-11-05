@@ -105,9 +105,19 @@ async def researcher_node(state: PlannerState) -> dict[str, Any]:
         )
     centre = destination.coordinates
 
+    async def _safe_poi_task() -> list[dict[str, Any]]:
+        try:
+            return await asyncio.wait_for(
+                tourism_pois(centre, radius_m=12_000, limit=30),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            log.info("poi_lookup_skipped_or_timeout", error=str(exc))
+            return []
+
     overview_task = wikipedia.city_overview(destination.name, destination.country)
     geo_task = wikipedia.geosearch(centre, radius_m=10_000, limit=50)
-    poi_task = tourism_pois(centre, radius_m=12_000, limit=30)
+    poi_task = _safe_poi_task()
     origin_task = (
         geocode(request.origin_city, request.country) if request.origin_city else _none()
     )

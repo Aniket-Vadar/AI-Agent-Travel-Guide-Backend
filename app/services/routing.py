@@ -30,9 +30,9 @@ TRAIN_FARE_PER_KM = 0.9
 FLIGHT_BASE_FARE = 2800.0
 FLIGHT_FARE_PER_KM = 4.2
 CAR_COST_PER_KM = 11.0
-OVERPASS_TIMEOUT_SECONDS = 70.0
+OVERPASS_TIMEOUT_SECONDS = 5.0
 # How long a request will wait for map furniture before moving on without it.
-HUB_BUDGET_SECONDS = 10.0
+HUB_BUDGET_SECONDS = 5.0
 
 
 def _decode_polyline(encoded: str, precision: int = 5) -> list[list[float]]:
@@ -194,10 +194,9 @@ async def overpass(query: str) -> dict:
     failure. Map furniture is enrichment: an empty result degrades the guide, it
     never breaks it.
     """
-    for endpoint in settings.overpass_endpoints:
+    for endpoint in settings.overpass_endpoints[:2]:
         try:
-            # Overpass is slow by nature; it needs a longer budget than the other
-            # providers, which is why the timeout is set here rather than globally.
+            # Overpass is slow by nature; limit to a strict short budget
             data = await post_json(
                 endpoint,
                 provider="overpass",
