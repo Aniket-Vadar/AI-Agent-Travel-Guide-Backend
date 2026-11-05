@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # ---------- Gemini ----------
     google_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
-    gemini_pro_model: str = "gemini-2.5-pro"
+    gemini_pro_model: str = "gemini-2.5-flash"
     gemini_temperature: float = 0.6
     gemini_max_output_tokens: int = 8192
 
@@ -71,6 +71,31 @@ class Settings(BaseSettings):
 
     # ---------- Derived ----------
     request_max_days: int = Field(default=21, description="Upper bound on trip length.")
+
+    @field_validator("gemini_pro_model")
+    @classmethod
+    def _sanitize_pro_model(cls, v: str) -> str:
+        # gemini-2.5-pro and 1.5 have been retired for new API keys by Google
+        if not v or "2.5-pro" in v or "1.5" in v:
+            return "gemini-2.5-flash"
+        return v
+
+    @field_validator("gemini_model")
+    @classmethod
+    def _sanitize_model(cls, v: str) -> str:
+        if not v or "1.5" in v:
+            return "gemini-2.5-flash"
+        return v
+
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_db_url(cls, v: str) -> str:
+        # Seamless Supabase PostgreSQL support
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        if v.startswith("postgresql://") and "+asyncpg" not in v:
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     @field_validator("log_level")
     @classmethod

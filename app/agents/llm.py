@@ -48,8 +48,8 @@ def get_llm(
         google_api_key=settings.google_api_key,
         temperature=settings.gemini_temperature if temperature is None else temperature,
         max_output_tokens=max_tokens or settings.gemini_max_output_tokens,
-        max_retries=3,
-        timeout=120,
+        max_retries=2,
+        timeout=35,
         convert_system_message_to_human=False,
     )
 
@@ -84,6 +84,16 @@ async def ainvoke_structured(
     except LLMUnavailableError:
         raise
     except Exception as exc:
+        if pro:
+            try:
+                log.info("retrying_with_base_model", schema=schema.__name__)
+                result = await structured(schema, pro=False, temperature=temperature).ainvoke(
+                    messages, config=config or {}
+                )
+                if result is not None:
+                    return result  # type: ignore[return-value]
+            except Exception:
+                pass
         log.warning("structured_call_failed", schema=schema.__name__, error=str(exc))
         if fallback is not None:
             return fallback
@@ -109,6 +119,18 @@ async def ainvoke_text(
     except LLMUnavailableError:
         raise
     except Exception as exc:
+        if pro:
+            try:
+                log.info("retrying_text_with_base_model")
+                response = await get_llm(pro=False, temperature=temperature).ainvoke(
+                    messages, config=config or {}
+                )
+                content = response.content
+                if isinstance(content, list):
+                    content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+                return str(content).strip()
+            except Exception:
+                pass
         log.warning("text_call_failed", error=str(exc))
         if fallback:
             return fallback

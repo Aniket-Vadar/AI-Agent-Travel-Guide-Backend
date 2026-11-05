@@ -382,7 +382,7 @@ async def storyteller_node(state: PlannerState) -> dict[str, Any]:
         return await ainvoke_structured(
             StoryBatch,
             [SystemMessage(content=prompts.STORYTELLER_AGENT), HumanMessage(content=context)],
-            pro=True,
+            pro=False,
             temperature=0.85,
             config=_child_config(state, "storyteller"),
             fallback=StoryBatch(stories=[]),

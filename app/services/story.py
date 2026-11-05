@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import BASE_DIR, settings
 from app.core.logging import get_logger
 from app.db.models import CityStory, StoryAudio
 
@@ -202,17 +203,44 @@ async def generate_story(session: AsyncSession, city: str, country: str = "") ->
     }
 
 
+AUDIO_DIR = BASE_DIR / "data" / "audio"
+AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+
 async def get_audio(session: AsyncSession, story_id: str) -> bytes | None:
-    """Fetch cached audio from the database."""
-    stmt = select(StoryAudio).where(StoryAudio.story_id == story_id)
-    result = await session.execute(stmt)
-    record = result.scalar_one_or_none()
-    return record.audio_data if record else None
+    """Fetch cached audio from disk or database."""
+    # 1. Fast disk cache check
+    file_path = AUDIO_DIR / f"{story_id}.mp3"
+    if file_path.exists():
+        try:
+            return file_path.read_bytes()
+        except Exception:
+            pass
+
+    # 2. Database check
+    try:
+        stmt = select(StoryAudio).where(StoryAudio.story_id == story_id)
+        result = await session.execute(stmt)
+        record = result.scalar_one_or_none()
+        if record and record.audio_data:
+            # Also cache to disk for future fast access
+            try:
+                file_path.write_bytes(bytes(record.audio_data))
+            except Exception:
+                pass
+            return bytes(record.audio_data)
+    except Exception as e:
+        log.warning("get_audio_db_failed", error=str(e), story_id=story_id)
+
+    return None
 
 
 async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
-    """Generate MP3 audio for a story via gTTS and cache it."""
+    """Generate MP3 audio for a story via Google Voice API (or gTTS) and cache it."""
     import asyncio
+    import base64
+    import httpx
+    from app.core.config import settings
 
     # Check cache
     existing = await get_audio(session, story_id)
@@ -230,26 +258,68 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
         if isinstance(place, dict):
             parts.append(f". Next, let's visit {place.get('name', '')}.")
             parts.append(place.get("story", ""))
-    full_text = " ".join(parts)
+    full_text = " ".join(parts)[:4500]  # Cap at reasonable length for TTS synthesis
 
-    # Generate audio in a thread (gTTS is synchronous and does network I/O)
-    def _make_audio() -> bytes:
-        from gtts import gTTS
-        tts = gTTS(text=full_text, lang="en", slow=False)
-        buf = io.BytesIO()
-        tts.write_to_fp(buf)
-        return buf.getvalue()
+    audio_bytes: bytes | None = None
 
-    audio_bytes = await asyncio.to_thread(_make_audio)
+    # Option A: Attempt Google Cloud Text-to-Speech API if key is present
+    if settings.google_api_key:
+        try:
+            tts_url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={settings.google_api_key}"
+            payload = {
+                "input": {"text": full_text},
+                "voice": {
+                    "languageCode": "en-US",
+                    "name": "en-US-Journey-F",
+                    "ssmlGender": "FEMALE",
+                },
+                "audioConfig": {
+                    "audioEncoding": "MP3",
+                    "speakingRate": 0.96,
+                },
+            }
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                res = await client.post(tts_url, json=payload)
+                if res.status_code == 200:
+                    data = res.json()
+                    if "audioContent" in data:
+                        audio_bytes = base64.b64decode(data["audioContent"])
+                        log.info("google_voice_api_success", story_id=story_id, size=len(audio_bytes))
+        except Exception as e:
+            log.warning("google_cloud_tts_fallback", error=str(e))
 
-    # Save to database
-    audio_record = StoryAudio(
-        story_id=story_id,
-        audio_data=audio_bytes,
-        size_bytes=len(audio_bytes),
-    )
-    session.add(audio_record)
-    await session.commit()
+    # Option B: Reliable Google Text-to-Speech (gTTS) fallback
+    if not audio_bytes:
+        def _make_gtts() -> bytes:
+            from gtts import gTTS
+            tts = gTTS(text=full_text, lang="en", slow=False)
+            buf = io.BytesIO()
+            tts.write_to_fp(buf)
+            return buf.getvalue()
+
+        audio_bytes = await asyncio.to_thread(_make_gtts)
+
+    # 1. Save to local disk cache (immune to SQLite locks and memory limits)
+    try:
+        file_path = AUDIO_DIR / f"{story_id}.mp3"
+        file_path.write_bytes(audio_bytes)
+    except Exception as e:
+        log.warning("disk_cache_failed", error=str(e))
+
+    # 2. Persist to database safely
+    try:
+        # Wrap bytes explicitly to prevent SQLite/aiosqlite memoryview interface errors
+        audio_record = StoryAudio(
+            story_id=story_id,
+            audio_data=bytes(audio_bytes),
+            size_bytes=len(audio_bytes),
+        )
+        session.add(audio_record)
+        await session.commit()
+    except Exception as db_err:
+        log.warning("audio_db_persist_warning", error=str(db_err), story_id=story_id)
+        # Roll back failed transaction so session stays healthy
+        await session.rollback()
 
     log.info("audio_generated", story_id=story_id, size_bytes=len(audio_bytes))
     return audio_bytes

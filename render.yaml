@@ -24,7 +24,7 @@ services:
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
       - key: GEMINI_PRO_MODEL
-        value: gemini-2.5-pro
+        value: gemini-2.5-flash
       - key: LANGSMITH_TRACING
         value: "false"
       - key: LANGSMITH_API_KEY
@@ -35,3 +35,4 @@ services:
         value: admin@wayfarer.local
       - key: CONTACT_URL
         value: https://github.com/Aniket-Vadar/AI-Agent-Travel-Guide-Backend
+
