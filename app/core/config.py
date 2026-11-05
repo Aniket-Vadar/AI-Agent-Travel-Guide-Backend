@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     app_name: str = "AI Travel Planner"
     app_env: str = "development"
     app_host: str = "0.0.0.0"
-    app_port: int = 8000
+    app_port: int = Field(default=8000, validation_alias=AliasChoices("PORT", "APP_PORT"))
     log_level: str = "INFO"
     cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000"
     api_key: str = ""

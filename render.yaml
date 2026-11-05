@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: ai-agent-travel-guide-backend
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2 --proxy-headers
+    healthCheckPath: /health/live
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:///./data/travel.db
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_PRO_MODEL
+        value: gemini-2.5-pro
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: CONTACT_EMAIL
+        value: admin@wayfarer.local
+      - key: CONTACT_URL
+        value: https://github.com/Aniket-Vadar/AI-Agent-Travel-Guide-Backend

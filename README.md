@@ -60,6 +60,29 @@ The API and interactive Swagger docs will be live at:
 
 ---
 
+## Deploy to Render
+
+### Option 1: Render Blueprint (Easiest & Automatic)
+1. In [Render Dashboard](https://dashboard.render.com), click **New +** -> **Blueprint**.
+2. Connect `https://github.com/Aniket-Vadar/AI-Agent-Travel-Guide-Backend`.
+3. Render reads `render.yaml` automatically and configures the service, health check, and ports.
+4. When prompted, enter your `GOOGLE_API_KEY`.
+5. Click **Apply**.
+
+### Option 2: Web Service Manual Setup
+If you don't see the repository in Render's list:
+- **Direct Git URL**: Under "Connect a repository", paste the public Git URL `https://github.com/Aniket-Vadar/AI-Agent-Travel-Guide-Backend.git` into the **"Public Git repository"** box and click **Continue**.
+- **Or Grant GitHub App Permission**: Click **Configure GitHub App** (or GitHub Settings > Applications > Render > Repository Access) and select `AI-Agent-Travel-Guide-Backend`.
+
+Settings:
+- **Runtime**: Python 3
+- **Build Command**: `pip install --upgrade pip && pip install -r requirements.txt`
+- **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2 --proxy-headers`
+- **Health Check Path**: `/health/live`
+- **Environment Variables**: Add `GOOGLE_API_KEY` (and `DATABASE_URL` if not using default SQLite).
+
+---
+
 ## Running with Docker
 
 ```bash
