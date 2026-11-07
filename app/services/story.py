@@ -266,6 +266,9 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
     if settings.google_api_key:
         try:
             tts_url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={settings.google_api_key}"
+            # Google Cloud best narration voices:
+            # 1. en-US-Journey-F: Warm, expressive travel storyteller (top recommended for audiobooks & guides)
+            # 2. en-US-Studio-O: High-fidelity natural studio voice
             payload = {
                 "input": {"text": full_text},
                 "voice": {
@@ -284,15 +287,21 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
                     data = res.json()
                     if "audioContent" in data:
                         audio_bytes = base64.b64decode(data["audioContent"])
-                        log.info("google_voice_api_success", story_id=story_id, size=len(audio_bytes))
+                        log.info("google_voice_api_success", story_id=story_id, size=len(audio_bytes), voice="en-US-Journey-F")
+                elif res.status_code in (429, 403):
+                    # Rate limit or quota exhausted: fall back instantly to gTTS without stalling
+                    log.warning("google_voice_rate_limited", status=res.status_code, msg="Rate limit hit, falling back to gTTS")
+                else:
+                    log.info("google_voice_api_skipped", status=res.status_code)
         except Exception as e:
             log.warning("google_cloud_tts_fallback", error=str(e))
 
-    # Option B: Reliable Google Text-to-Speech (gTTS) fallback
+    # Option B: Reliable Google Text-to-Speech (gTTS) fallback if Cloud API is rate-limited or unconfigured
     if not audio_bytes:
+        log.info("generating_audio_via_gtts_engine", story_id=story_id)
         def _make_gtts() -> bytes:
             from gtts import gTTS
-            tts = gTTS(text=full_text, lang="en", slow=False)
+            tts = gTTS(text=full_text, lang="en", tld="com", slow=False)
             buf = io.BytesIO()
             tts.write_to_fp(buf)
             return buf.getvalue()
