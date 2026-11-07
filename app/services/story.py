@@ -139,8 +139,8 @@ async def generate_story(session: AsyncSession, city: str, country: str = "") ->
 
     raw = await ainvoke_text(
         [HumanMessage(content=prompt)],
-        pro=True,
-        temperature=0.8,
+        pro=False,
+        temperature=0.7,
     )
 
     # Parse JSON response
@@ -252,13 +252,32 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
     if story_record is None:
         raise ValueError(f"Story {story_id} not found")
 
-    # Build narration text
-    parts = [story_record.title, ".", story_record.overview]
-    for place in (story_record.places_json or []):
-        if isinstance(place, dict):
-            parts.append(f". Next, let's visit {place.get('name', '')}.")
-            parts.append(place.get("story", ""))
-    full_text = " ".join(parts)[:4500]  # Cap at reasonable length for TTS synthesis
+    # Build narration text (~850-1050 chars: ideal for 1.5 min natural audio guide)
+    narrative_pieces = []
+    if story_record.title:
+        narrative_pieces.append(f"{story_record.title}.")
+    if story_record.overview:
+        narrative_pieces.append(story_record.overview)
+
+    if story_record.places_json and isinstance(story_record.places_json, list):
+        notable = []
+        for p in story_record.places_json[:3]:
+            if isinstance(p, dict) and p.get("name"):
+                snippet = (p.get("story") or p.get("why") or "").split(".")[0]
+                if snippet:
+                    notable.append(f"At {p.get('name')}, {snippet.strip()}.")
+                else:
+                    notable.append(f"Explore {p.get('name')}.")
+        if notable:
+            narrative_pieces.append(" ".join(notable))
+
+    if story_record.best_time:
+        narrative_pieces.append(f"The best time to experience this destination is {story_record.best_time}.")
+
+    full_text = " ".join(narrative_pieces).strip()
+    if len(full_text) > 1050:
+        cutoff = full_text[:1050].rfind(".")
+        full_text = full_text[:cutoff + 1] if cutoff > 350 else full_text[:1050]
 
     audio_bytes: bytes | None = None
 
@@ -266,9 +285,6 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
     if settings.google_api_key:
         try:
             tts_url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={settings.google_api_key}"
-            # Google Cloud best narration voices:
-            # 1. en-US-Journey-F: Warm, expressive travel storyteller (top recommended for audiobooks & guides)
-            # 2. en-US-Studio-O: High-fidelity natural studio voice
             payload = {
                 "input": {"text": full_text},
                 "voice": {
@@ -281,7 +297,7 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
                     "speakingRate": 0.96,
                 },
             }
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:
                 res = await client.post(tts_url, json=payload)
                 if res.status_code == 200:
                     data = res.json()
@@ -289,16 +305,15 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
                         audio_bytes = base64.b64decode(data["audioContent"])
                         log.info("google_voice_api_success", story_id=story_id, size=len(audio_bytes), voice="en-US-Journey-F")
                 elif res.status_code in (429, 403):
-                    # Rate limit or quota exhausted: fall back instantly to gTTS without stalling
                     log.warning("google_voice_rate_limited", status=res.status_code, msg="Rate limit hit, falling back to gTTS")
                 else:
                     log.info("google_voice_api_skipped", status=res.status_code)
         except Exception as e:
             log.warning("google_cloud_tts_fallback", error=str(e))
 
-    # Option B: Reliable Google Text-to-Speech (gTTS) fallback if Cloud API is rate-limited or unconfigured
+    # Option B: Fast, reliable Google Text-to-Speech (gTTS) fallback
     if not audio_bytes:
-        log.info("generating_audio_via_gtts_engine", story_id=story_id)
+        log.info("generating_audio_via_gtts_engine", story_id=story_id, text_len=len(full_text))
         def _make_gtts() -> bytes:
             from gtts import gTTS
             tts = gTTS(text=full_text, lang="en", tld="com", slow=False)
@@ -306,7 +321,13 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
             tts.write_to_fp(buf)
             return buf.getvalue()
 
-        audio_bytes = await asyncio.to_thread(_make_gtts)
+        try:
+            audio_bytes = await asyncio.to_thread(_make_gtts)
+        except Exception as e:
+            log.warning("gtts_generation_failed", error=str(e), story_id=story_id)
+
+    if not audio_bytes:
+        raise RuntimeError("Audio synthesis engine could not generate audio at this time")
 
     # 1. Save to local disk cache (immune to SQLite locks and memory limits)
     try:

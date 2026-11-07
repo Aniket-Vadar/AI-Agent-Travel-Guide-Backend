@@ -61,10 +61,18 @@ async def get_city_audio(
 
     story_id = story["id"]
 
-    # Check for cached audio
-    audio_bytes = await get_audio(session, story_id)
-    if not audio_bytes:
-        audio_bytes = await generate_audio(session, story_id)
+    # Check for cached audio or generate
+    try:
+        audio_bytes = await get_audio(session, story_id)
+        if not audio_bytes:
+            audio_bytes = await generate_audio(session, story_id)
+    except Exception as e:
+        log.error("get_city_audio_failed", city=city, error=str(e))
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=503,
+            detail="Audio narration is generating or temporarily busy. Please try again in a moment.",
+        )
 
     return Response(
         content=audio_bytes,
