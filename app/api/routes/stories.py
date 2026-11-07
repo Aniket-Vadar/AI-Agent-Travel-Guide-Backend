@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.rate_limit import limiter
 from app.db.session import get_session
 from app.services.story import (
     POPULAR_DESTINATIONS,
@@ -44,7 +46,9 @@ async def get_city_story(
 
 
 @router.get("/{city}/audio", summary="Get audio narration for a city story")
+@limiter.limit(settings.rate_limit_audio)
 async def get_city_audio(
+    request: Request,
     city: str,
     country: str = Query(default=""),
     session: AsyncSession = Depends(get_session),

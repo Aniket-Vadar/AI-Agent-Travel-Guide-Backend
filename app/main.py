@@ -19,9 +19,11 @@ from app.core.config import FRONTEND_DIR, settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import register_middleware
+from app.core.rate_limit import custom_rate_limit_handler, limiter
 from app.core.tracing import configure_tracing
 from app.db.session import dispose_db, init_db
 from app.services.http import close_client
+from slowapi.errors import RateLimitExceeded
 
 configure_logging(settings.log_level, json_logs=settings.is_production)
 log = get_logger("main")
@@ -87,6 +89,10 @@ def create_app() -> FastAPI:
     )
     register_middleware(app)
     register_exception_handlers(app)
+
+    # Attach rate limiter & handler
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, custom_rate_limit_handler)
 
     app.include_router(api_router)
     app.include_router(health_router)  # unversioned /health for load balancers

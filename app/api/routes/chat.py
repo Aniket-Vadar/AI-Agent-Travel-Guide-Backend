@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import NotFoundError
+from app.core.rate_limit import limiter
 from app.db.session import get_session
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services import chat as chat_service
@@ -22,11 +24,13 @@ router = APIRouter(prefix="/chat", tags=["conversation"])
         "`ready_to_plan` is true, post `suggested_request` to /plans."
     ),
 )
+@limiter.limit(settings.rate_limit_chat)
 async def send_message(
-    request: ChatRequest,
+    request: Request,
+    payload: ChatRequest,
     session: AsyncSession = Depends(get_session),
 ) -> ChatResponse:
-    return await chat_service.handle_turn(session, request)
+    return await chat_service.handle_turn(session, payload)
 
 
 @router.get("/{session_id}", response_model=ChatResponse, summary="Resume a conversation")

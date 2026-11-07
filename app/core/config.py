@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/travel.db"
     cache_ttl_seconds: int = 86_400
 
+    # ---------- Security & Rate Limiting ----------
+    rate_limit_enabled: bool = True  # Set RATE_LIMIT_ENABLED=false in .env to disable
+    rate_limit_chat: str = "15/minute"
+    rate_limit_pdf: str = "6/minute"
+    rate_limit_audio: str = "6/minute"
+    rate_limit_global: str = "60/minute"
+
     # ---------- Booking ----------
     booking_provider: str = "simulated"
     booking_currency: str = "INR"

@@ -67,7 +67,71 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class RateLimitAndAbuseMiddleware(BaseHTTPMiddleware):
+    """Enforce real IP abuse protection and payload boundaries.
+
+    Controlled by `settings.rate_limit_enabled` (toggleable in .env).
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if not settings.rate_limit_enabled:
+            return await call_next(request)
+
+        # Allow health and docs paths freely
+        path = request.url.path
+        if path in PUBLIC_PATHS or path.startswith("/health"):
+            return await call_next(request)
+
+        from app.core.rate_limit import abuse_tracker, get_real_ip
+
+        ip = get_real_ip(request)
+
+        # 1. Check if IP is currently jailed for bursting
+        if abuse_tracker.is_jailed(ip):
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "error": {
+                        "code": "temporarily_blocked",
+                        "message": "Too many requests detected from your IP. Temporary cooldown in place.",
+                        "ip": ip,
+                    }
+                },
+                headers={"Retry-After": "600"},
+            )
+
+        # 2. Check payload size limit (max 64 KB)
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > 65536:
+            return JSONResponse(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                content={
+                    "error": {
+                        "code": "payload_too_large",
+                        "message": "Request payload exceeds allowed limit (64 KB).",
+                    }
+                },
+            )
+
+        # 3. Record hit in sliding window
+        if not abuse_tracker.record_and_check(ip):
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "error": {
+                        "code": "rate_limited",
+                        "message": "Burst request limit exceeded. Temporary cooldown engaged.",
+                        "ip": ip,
+                    }
+                },
+                headers={"Retry-After": "600"},
+            )
+
+        return await call_next(request)
+
+
 def register_middleware(app: FastAPI) -> None:
     # Added last runs first, so the request-context wrapper goes on after auth.
+    app.add_middleware(RateLimitAndAbuseMiddleware)
     app.add_middleware(APIKeyMiddleware)
     app.add_middleware(RequestContextMiddleware)
