@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/plans", tags=["planning"])
     response_description="The finished guide, already saved and retrievable by plan_id.",
 )
 async def create_plan(
-    request: TravelRequest,
+    request: TravelRequest = Body(...),
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(require_auth_user),
 ) -> TravelGuide:
@@ -44,7 +44,7 @@ async def create_plan(
     response_description="A text/event-stream of StreamEvent objects.",
 )
 async def stream_plan(
-    request: TravelRequest,
+    request: TravelRequest = Body(...),
     _user: dict = Depends(require_auth_user),
 ) -> EventSourceResponse:
     """Server-sent events, one per completed agent, ending with the full guide.

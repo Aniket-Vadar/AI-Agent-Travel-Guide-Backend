@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -27,7 +27,7 @@ class PDFRequest(BaseModel):
 @limiter.limit(settings.rate_limit_pdf)
 async def download_pdf_guide(
     request: Request,
-    payload: PDFRequest,
+    payload: PDFRequest = Body(...),
     _user: dict = Depends(require_auth_user),
 ):
     """Generate a comprehensive PDF travel guide and return it as a downloadable file."""

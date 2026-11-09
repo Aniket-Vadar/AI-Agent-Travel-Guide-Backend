@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import httpx
-from fastapi import Header, HTTPException, Query, status
+from fastapi import Header, HTTPException, Request, status
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -15,8 +15,8 @@ _TOKEN_CACHE: dict[str, dict] = {}
 
 
 async def require_auth_user(
+    request: Request,
     authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None),
 ) -> dict:
     """Dependency that ensures requests originate from a signed-up, authenticated user.
 
@@ -26,7 +26,7 @@ async def require_auth_user(
     if not settings.require_auth:
         return {"id": "anonymous", "authenticated": False}
 
-    raw_token = token
+    raw_token = request.query_params.get("token")
     if authorization and authorization.startswith("Bearer "):
         raw_token = authorization.split("Bearer ", 1)[-1].strip()
 

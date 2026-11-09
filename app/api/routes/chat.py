@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_auth_user
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/chat", tags=["conversation"])
 @limiter.limit(settings.rate_limit_chat)
 async def send_message(
     request: Request,
-    payload: ChatRequest,
+    payload: ChatRequest = Body(...),
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(require_auth_user),
 ) -> ChatResponse:
