@@ -9,7 +9,7 @@ from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-PROJECT_ROOT = BASE_DIR
+PROJECT_ROOT = BASE_DIR.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
 
@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     """Every knob the service exposes. Values come from `.env` or the process env."""
 
     model_config = SettingsConfigDict(
-        env_file=(BASE_DIR / ".env", ".env"),
+        env_file=(PROJECT_ROOT / ".env", BASE_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
