@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from app.api.auth import require_auth_user
 from app.core.errors import AppError
 from app.core.logging import get_logger
 from app.db.session import SessionFactory, get_session
@@ -28,6 +29,7 @@ router = APIRouter(prefix="/plans", tags=["planning"])
 async def create_plan(
     request: TravelRequest,
     session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_auth_user),
 ) -> TravelGuide:
     """Run the full agent team and return the guide in one response.
 
@@ -41,7 +43,10 @@ async def create_plan(
     summary="Generate a guide, streaming each agent's progress",
     response_description="A text/event-stream of StreamEvent objects.",
 )
-async def stream_plan(request: TravelRequest) -> EventSourceResponse:
+async def stream_plan(
+    request: TravelRequest,
+    _user: dict = Depends(require_auth_user),
+) -> EventSourceResponse:
     """Server-sent events, one per completed agent, ending with the full guide.
 
     This handler opens its own database session: the request-scoped dependency

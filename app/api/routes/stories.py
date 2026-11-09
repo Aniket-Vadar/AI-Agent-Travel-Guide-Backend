@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.auth import require_auth_user
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.rate_limit import limiter
@@ -33,6 +34,7 @@ async def get_city_story(
     city: str,
     country: str = Query(default="", description="Country name for more specific results"),
     session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_auth_user),
 ):
     """Fetch a city story. If one doesn't exist yet, generate it via AI and cache it."""
     # Try cache first
@@ -52,6 +54,7 @@ async def get_city_audio(
     city: str,
     country: str = Query(default=""),
     session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_auth_user),
 ):
     """Return MP3 audio narration of the city story. Generates both story and audio if needed."""
     # Ensure story exists

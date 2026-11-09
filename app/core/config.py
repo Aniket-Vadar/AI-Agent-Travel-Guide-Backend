@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     rate_limit_audio: str = "6/minute"
     rate_limit_global: str = "60/minute"
 
+    # ---------- Supabase & Authentication ----------
+    require_auth: bool = True  # When True, requests require a valid Supabase user token
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    supabase_jwt_secret: str = ""
+
     # ---------- Booking ----------
     booking_provider: str = "simulated"
     booking_currency: str = "INR"

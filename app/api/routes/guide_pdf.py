@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from app.api.auth import require_auth_user
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.rate_limit import limiter
@@ -24,7 +25,11 @@ class PDFRequest(BaseModel):
 
 @router.post("/pdf", summary="Generate a downloadable PDF travel guide")
 @limiter.limit(settings.rate_limit_pdf)
-async def download_pdf_guide(request: Request, payload: PDFRequest):
+async def download_pdf_guide(
+    request: Request,
+    payload: PDFRequest,
+    _user: dict = Depends(require_auth_user),
+):
     """Generate a comprehensive PDF travel guide and return it as a downloadable file."""
     pdf_bytes = await generate_pdf(
         city=payload.city,
