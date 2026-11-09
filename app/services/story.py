@@ -209,21 +209,22 @@ AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 async def get_audio(session: AsyncSession, story_id: str) -> bytes | None:
     """Fetch cached audio from disk or database."""
-    # 1. Fast disk cache check
+    # 1. Fast disk cache check (only accept high-fidelity files > 22KB)
     file_path = AUDIO_DIR / f"{story_id}.mp3"
     if file_path.exists():
         try:
-            return file_path.read_bytes()
+            data = file_path.read_bytes()
+            if len(data) >= 22000:
+                return data
         except Exception:
             pass
 
-    # 2. Database check
+    # 2. Database check (only accept high-fidelity files > 22KB)
     try:
         stmt = select(StoryAudio).where(StoryAudio.story_id == story_id)
         result = await session.execute(stmt)
         record = result.scalar_one_or_none()
-        if record and record.audio_data:
-            # Also cache to disk for future fast access
+        if record and record.audio_data and len(record.audio_data) >= 22000:
             try:
                 file_path.write_bytes(bytes(record.audio_data))
             except Exception:
@@ -281,53 +282,24 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
 
     audio_bytes: bytes | None = None
 
-    # Option A: Attempt Google Cloud Text-to-Speech API if credentials allow
-    if settings.google_api_key:
-        try:
-            tts_url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={settings.google_api_key}"
-            payload = {
-                "input": {"text": full_text},
-                "voice": {
-                    "languageCode": "en-US",
-                    "name": "en-US-Journey-F",
-                    "ssmlGender": "FEMALE",
-                },
-                "audioConfig": {
-                    "audioEncoding": "MP3",
-                    "speakingRate": 0.96,
-                },
-            }
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                res = await client.post(tts_url, json=payload)
-                if res.status_code == 200:
-                    data = res.json()
-                    if "audioContent" in data:
-                        audio_bytes = base64.b64decode(data["audioContent"])
-                        log.info("google_voice_api_success", story_id=story_id, size=len(audio_bytes), voice="en-US-Journey-F")
-                elif res.status_code in (429, 403, 401):
-                    log.warning("google_voice_api_skipped", status=res.status_code)
-        except Exception as e:
-            log.warning("google_cloud_tts_fallback", error=str(e))
+    # Option A: High-Fidelity Neural Studio Voice Engine (Documentary, warm audiobook pacing)
+    try:
+        import edge_tts
+        # Premium expressive voices: Neerja for Indian cities, Aria for global destinations
+        voice = "en-IN-NeerjaNeural" if "india" in (story_record.country or "").lower() else "en-US-AriaNeural"
+        log.info("generating_audio_via_neural_studio_voice", voice=voice, story_id=story_id)
+        communicate = edge_tts.Communicate(full_text, voice=voice, rate="-2%")
+        buf = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                buf.extend(chunk["data"])
+        if buf:
+            audio_bytes = bytes(buf)
+            log.info("neural_studio_voice_success", size=len(audio_bytes), voice=voice, story_id=story_id)
+    except Exception as e:
+        log.warning("neural_studio_voice_fallback", error=str(e))
 
-    # Option B: High-Fidelity Neural Studio Voice Engine (Documentary & Audiobook grade)
-    if not audio_bytes:
-        try:
-            import edge_tts
-            # Premium expressive voices: Neerja for Indian cities, Aria/Guy for global destinations
-            voice = "en-IN-NeerjaNeural" if "india" in (story_record.country or "").lower() else "en-US-AriaNeural"
-            log.info("generating_audio_via_neural_studio_voice", voice=voice, story_id=story_id)
-            communicate = edge_tts.Communicate(full_text, voice=voice, rate="-2%")
-            buf = bytearray()
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    buf.extend(chunk["data"])
-            if buf:
-                audio_bytes = bytes(buf)
-                log.info("neural_studio_voice_success", size=len(audio_bytes), voice=voice, story_id=story_id)
-        except Exception as e:
-            log.warning("neural_studio_voice_fallback", error=str(e))
-
-    # Option C: Fast Google Text-to-Speech (gTTS) emergency fallback
+    # Option B: Fast Google Text-to-Speech (gTTS) emergency fallback
     if not audio_bytes:
         log.info("generating_audio_via_gtts_engine", story_id=story_id, text_len=len(full_text))
         def _make_gtts() -> bytes:
