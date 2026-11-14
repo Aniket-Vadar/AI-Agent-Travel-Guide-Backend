@@ -7,10 +7,12 @@ save it, and then optionally generate audio narration via gTTS.
 
 from __future__ import annotations
 
+import asyncio
 import io
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,6 +21,22 @@ from app.core.logging import get_logger
 from app.db.models import CityStory, StoryAudio
 
 log = get_logger("story")
+
+# Concurrency locks to deduplicate simultaneous requests for the same city/audio
+_STORY_LOCKS: dict[str, asyncio.Lock] = {}
+_AUDIO_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _get_story_lock(key: str) -> asyncio.Lock:
+    if key not in _STORY_LOCKS:
+        _STORY_LOCKS[key] = asyncio.Lock()
+    return _STORY_LOCKS[key]
+
+
+def _get_audio_lock(key: str) -> asyncio.Lock:
+    if key not in _AUDIO_LOCKS:
+        _AUDIO_LOCKS[key] = asyncio.Lock()
+    return _AUDIO_LOCKS[key]
 
 # Popular destinations shown on the homepage
 POPULAR_DESTINATIONS: list[dict[str, Any]] = [
@@ -116,91 +134,107 @@ async def generate_story(session: AsyncSession, city: str, country: str = "") ->
     if existing:
         return existing
 
-    # Get Wikipedia context for better stories
-    wiki_context = ""
-    try:
-        from app.services.geo import geocode
-        dest = await geocode(city_clean, country_clean)
-        if dest:
-            overview = await wikipedia.city_overview(dest.name, dest.country)
-            if overview:
-                wiki_context = f"\n\nWikipedia context: {overview.get('summary', '')}"
-                country_clean = country_clean or dest.country
-                country_lower = country_clean.lower()
-    except Exception:
-        pass
+    lock_key = f"{city_lower}:{country_lower}"
+    async with _get_story_lock(lock_key):
+        # Double-checked locking: re-check if another worker just created it
+        existing = await get_story(session, city_lower, country_lower)
+        if existing:
+            return existing
 
-    # Generate story via LLM
-    prompt = STORY_PROMPT.format(city=city_clean, country=country_clean or "unknown")
-    if wiki_context:
-        prompt += wiki_context
+        # Get Wikipedia context for better stories
+        wiki_context = ""
+        try:
+            from app.services.geo import geocode
+            dest = await geocode(city_clean, country_clean)
+            if dest:
+                overview = await wikipedia.city_overview(dest.name, dest.country)
+                if overview:
+                    wiki_context = f"\n\nWikipedia context: {overview.get('summary', '')}"
+                    country_clean = country_clean or dest.country
+                    country_lower = country_clean.lower()
+        except Exception:
+            pass
 
-    from langchain_core.messages import HumanMessage
+        # Generate story via LLM
+        prompt = STORY_PROMPT.format(city=city_clean, country=country_clean or "unknown")
+        if wiki_context:
+            prompt += wiki_context
 
-    raw = await ainvoke_text(
-        [HumanMessage(content=prompt)],
-        pro=False,
-        temperature=0.7,
-    )
+        from langchain_core.messages import HumanMessage
 
-    # Parse JSON response
-    try:
-        # Strip markdown code fences if present
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.startswith("json"):
-            text = text[4:]
-        if text.endswith("```"):
-            text = text[:-3]
-        data = json_mod.loads(text.strip())
-    except (json_mod.JSONDecodeError, ValueError):
-        log.warning("story_parse_failed", city=city_clean, raw_length=len(raw))
-        data = {
-            "title": f"Discover {city_clean}",
-            "overview": raw[:500] if raw else f"A beautiful city waiting to be explored.",
-            "places": [],
-            "highlights": [],
-            "best_time": "Year-round",
+        raw = await ainvoke_text(
+            [HumanMessage(content=prompt)],
+            pro=False,
+            temperature=0.7,
+        )
+
+        # Parse JSON response
+        try:
+            # Strip markdown code fences if present
+            text = raw.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.startswith("json"):
+                text = text[4:]
+            if text.endswith("```"):
+                text = text[:-3]
+            data = json_mod.loads(text.strip())
+        except (json_mod.JSONDecodeError, ValueError):
+            log.warning("story_parse_failed", city=city_clean, raw_length=len(raw))
+            data = {
+                "title": f"Discover {city_clean}",
+                "overview": raw[:500] if raw else f"A beautiful city waiting to be explored.",
+                "places": [],
+                "highlights": [],
+                "best_time": "Year-round",
+            }
+
+        # Find an image
+        image_url = None
+        for dest_info in POPULAR_DESTINATIONS:
+            if dest_info["city"].lower() == city_lower:
+                image_url = dest_info["image"]
+                break
+
+        # Save to database
+        record = CityStory(
+            city=city_lower,
+            country=country_lower,
+            title=data.get("title", f"Discover {city_clean}"),
+            overview=data.get("overview", ""),
+            places_json=data.get("places", []),
+            highlights=data.get("highlights", []),
+            best_time=data.get("best_time", ""),
+            image_url=image_url,
+        )
+        session.add(record)
+        try:
+            await session.commit()
+            await session.refresh(record)
+        except IntegrityError:
+            await session.rollback()
+            # Concurrency race: Another request just committed this exact story! Fetch it safely
+            race_winner = await get_story(session, city_lower, country_lower)
+            if race_winner:
+                log.info("story_concurrent_race_handled", city=city_lower, story_id=race_winner.get("id"))
+                return race_winner
+            raise
+
+        log.info("story_generated", city=city_lower, country=country_lower, story_id=record.id)
+
+        return {
+            "id": record.id,
+            "city": record.city,
+            "country": record.country,
+            "title": record.title,
+            "overview": record.overview,
+            "places": record.places_json or [],
+            "highlights": record.highlights or [],
+            "best_time": record.best_time,
+            "image_url": record.image_url,
+            "has_audio": False,
+            "created_at": record.created_at.isoformat() if record.created_at else "",
         }
-
-    # Find an image
-    image_url = None
-    for dest_info in POPULAR_DESTINATIONS:
-        if dest_info["city"].lower() == city_lower:
-            image_url = dest_info["image"]
-            break
-
-    # Save to database
-    record = CityStory(
-        city=city_lower,
-        country=country_lower,
-        title=data.get("title", f"Discover {city_clean}"),
-        overview=data.get("overview", ""),
-        places_json=data.get("places", []),
-        highlights=data.get("highlights", []),
-        best_time=data.get("best_time", ""),
-        image_url=image_url,
-    )
-    session.add(record)
-    await session.commit()
-    await session.refresh(record)
-
-    log.info("story_generated", city=city_lower, country=country_lower, story_id=record.id)
-
-    return {
-        "id": record.id,
-        "city": record.city,
-        "country": record.country,
-        "title": record.title,
-        "overview": record.overview,
-        "places": record.places_json or [],
-        "highlights": record.highlights or [],
-        "best_time": record.best_time,
-        "image_url": record.image_url,
-        "has_audio": False,
-        "created_at": record.created_at.isoformat() if record.created_at else "",
-    }
 
 
 AUDIO_DIR = BASE_DIR / "data" / "audio"
@@ -238,106 +272,111 @@ async def get_audio(session: AsyncSession, story_id: str) -> bytes | None:
 
 async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
     """Generate MP3 audio for a story via Google Voice API (or gTTS) and cache it."""
-    import asyncio
     import base64
     import httpx
     from app.core.config import settings
 
-    # Check cache
+    # Check cache first
     existing = await get_audio(session, story_id)
     if existing:
         return existing
 
-    # Get the story text
-    story_record = await session.get(CityStory, story_id)
-    if story_record is None:
-        raise ValueError(f"Story {story_id} not found")
+    async with _get_audio_lock(story_id):
+        # Double check cache inside lock
+        existing = await get_audio(session, story_id)
+        if existing:
+            return existing
 
-    # Build narration text (~850-1050 chars: ideal for 1.5 min natural audio guide)
-    narrative_pieces = []
-    if story_record.title:
-        narrative_pieces.append(f"{story_record.title}.")
-    if story_record.overview:
-        narrative_pieces.append(story_record.overview)
+        # Get the story text
+        story_record = await session.get(CityStory, story_id)
+        if story_record is None:
+            raise ValueError(f"Story {story_id} not found")
 
-    if story_record.places_json and isinstance(story_record.places_json, list):
-        notable = []
-        for p in story_record.places_json[:3]:
-            if isinstance(p, dict) and p.get("name"):
-                snippet = (p.get("story") or p.get("why") or "").split(".")[0]
-                if snippet:
-                    notable.append(f"At {p.get('name')}, {snippet.strip()}.")
-                else:
-                    notable.append(f"Explore {p.get('name')}.")
-        if notable:
-            narrative_pieces.append(" ".join(notable))
+        # Build narration text (~850-1050 chars: ideal for 1.5 min natural audio guide)
+        narrative_pieces = []
+        if story_record.title:
+            narrative_pieces.append(f"{story_record.title}.")
+        if story_record.overview:
+            narrative_pieces.append(story_record.overview)
 
-    if story_record.best_time:
-        narrative_pieces.append(f"The best time to experience this destination is {story_record.best_time}.")
+        if story_record.places_json and isinstance(story_record.places_json, list):
+            notable = []
+            for p in story_record.places_json[:3]:
+                if isinstance(p, dict) and p.get("name"):
+                    snippet = (p.get("story") or p.get("why") or "").split(".")[0]
+                    if snippet:
+                        notable.append(f"At {p.get('name')}, {snippet.strip()}.")
+                    else:
+                        notable.append(f"Explore {p.get('name')}.")
+            if notable:
+                narrative_pieces.append(" ".join(notable))
 
-    full_text = " ".join(narrative_pieces).strip()
-    if len(full_text) > 1050:
-        cutoff = full_text[:1050].rfind(".")
-        full_text = full_text[:cutoff + 1] if cutoff > 350 else full_text[:1050]
+        if story_record.best_time:
+            narrative_pieces.append(f"The best time to experience this destination is {story_record.best_time}.")
 
-    audio_bytes: bytes | None = None
+        full_text = " ".join(narrative_pieces).strip()
+        if len(full_text) > 1050:
+            cutoff = full_text[:1050].rfind(".")
+            full_text = full_text[:cutoff + 1] if cutoff > 350 else full_text[:1050]
 
-    # Option A: High-Fidelity Neural Studio Voice Engine (Documentary, warm audiobook pacing)
-    try:
-        import edge_tts
-        # Premium expressive voices: Neerja for Indian cities, Aria for global destinations
-        voice = "en-IN-NeerjaNeural" if "india" in (story_record.country or "").lower() else "en-US-AriaNeural"
-        log.info("generating_audio_via_neural_studio_voice", voice=voice, story_id=story_id)
-        communicate = edge_tts.Communicate(full_text, voice=voice, rate="-2%")
-        buf = bytearray()
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                buf.extend(chunk["data"])
-        if buf:
-            audio_bytes = bytes(buf)
-            log.info("neural_studio_voice_success", size=len(audio_bytes), voice=voice, story_id=story_id)
-    except Exception as e:
-        log.warning("neural_studio_voice_fallback", error=str(e))
+        audio_bytes: bytes | None = None
 
-    # Option B: Fast Google Text-to-Speech (gTTS) emergency fallback
-    if not audio_bytes:
-        log.info("generating_audio_via_gtts_engine", story_id=story_id, text_len=len(full_text))
-        def _make_gtts() -> bytes:
-            from gtts import gTTS
-            tts = gTTS(text=full_text, lang="en", tld="com", slow=False)
-            buf = io.BytesIO()
-            tts.write_to_fp(buf)
-            return buf.getvalue()
-
+        # Option A: High-Fidelity Neural Studio Voice Engine (Documentary, warm audiobook pacing)
         try:
-            audio_bytes = await asyncio.to_thread(_make_gtts)
+            import edge_tts
+            # Premium expressive voices: Neerja for Indian cities, Aria for global destinations
+            voice = "en-IN-NeerjaNeural" if "india" in (story_record.country or "").lower() else "en-US-AriaNeural"
+            log.info("generating_audio_via_neural_studio_voice", voice=voice, story_id=story_id)
+            communicate = edge_tts.Communicate(full_text, voice=voice, rate="-2%")
+            buf = bytearray()
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    buf.extend(chunk["data"])
+            if buf:
+                audio_bytes = bytes(buf)
+                log.info("neural_studio_voice_success", size=len(audio_bytes), voice=voice, story_id=story_id)
         except Exception as e:
-            log.warning("gtts_generation_failed", error=str(e), story_id=story_id)
+            log.warning("neural_studio_voice_fallback", error=str(e))
 
-    if not audio_bytes:
-        raise RuntimeError("Audio synthesis engine could not generate audio at this time")
+        # Option B: Fast Google Text-to-Speech (gTTS) emergency fallback
+        if not audio_bytes:
+            log.info("generating_audio_via_gtts_engine", story_id=story_id, text_len=len(full_text))
+            def _make_gtts() -> bytes:
+                from gtts import gTTS
+                tts = gTTS(text=full_text, lang="en", tld="com", slow=False)
+                buf = io.BytesIO()
+                tts.write_to_fp(buf)
+                return buf.getvalue()
 
-    # 1. Save to local disk cache (immune to SQLite locks and memory limits)
-    try:
-        file_path = AUDIO_DIR / f"{story_id}.mp3"
-        file_path.write_bytes(audio_bytes)
-    except Exception as e:
-        log.warning("disk_cache_failed", error=str(e))
+            try:
+                audio_bytes = await asyncio.to_thread(_make_gtts)
+            except Exception as e:
+                log.warning("gtts_generation_failed", error=str(e), story_id=story_id)
 
-    # 2. Persist to database safely
-    try:
-        # Wrap bytes explicitly to prevent SQLite/aiosqlite memoryview interface errors
-        audio_record = StoryAudio(
-            story_id=story_id,
-            audio_data=bytes(audio_bytes),
-            size_bytes=len(audio_bytes),
-        )
-        session.add(audio_record)
-        await session.commit()
-    except Exception as db_err:
-        log.warning("audio_db_persist_warning", error=str(db_err), story_id=story_id)
-        # Roll back failed transaction so session stays healthy
-        await session.rollback()
+        if not audio_bytes:
+            raise RuntimeError("Audio synthesis engine could not generate audio at this time")
 
-    log.info("audio_generated", story_id=story_id, size_bytes=len(audio_bytes))
-    return audio_bytes
+        # 1. Save to local disk cache (immune to SQLite locks and memory limits)
+        try:
+            file_path = AUDIO_DIR / f"{story_id}.mp3"
+            file_path.write_bytes(audio_bytes)
+        except Exception as e:
+            log.warning("disk_cache_failed", error=str(e))
+
+        # 2. Persist to database safely
+        try:
+            # Wrap bytes explicitly to prevent SQLite/aiosqlite memoryview interface errors
+            audio_record = StoryAudio(
+                story_id=story_id,
+                audio_data=bytes(audio_bytes),
+                size_bytes=len(audio_bytes),
+            )
+            session.add(audio_record)
+            await session.commit()
+        except Exception as db_err:
+            log.warning("audio_db_persist_warning", error=str(db_err), story_id=story_id)
+            # Roll back failed transaction so session stays healthy
+            await session.rollback()
+
+        log.info("audio_generated", story_id=story_id, size_bytes=len(audio_bytes))
+        return audio_bytes
