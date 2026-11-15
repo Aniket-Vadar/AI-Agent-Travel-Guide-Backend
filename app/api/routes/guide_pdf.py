@@ -1,7 +1,5 @@
 """PDF travel guide download endpoint."""
 
-from __future__ import annotations
-
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field

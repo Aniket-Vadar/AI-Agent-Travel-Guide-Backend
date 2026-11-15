@@ -67,7 +67,18 @@ async def require_auth_user(
             # Fallback if network to Supabase times out but JWT format is valid
             parts = raw_token.split(".")
             if len(parts) == 3:
-                return {"id": "supabase_user", "authenticated": True}
+                try:
+                    import base64
+                    import json
+                    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+                    payload_data = json.loads(base64.urlsafe_b64decode(padded))
+                    return {
+                        "id": payload_data.get("sub", "supabase_user"),
+                        "email": payload_data.get("email", ""),
+                        "authenticated": True,
+                    }
+                except Exception:
+                    return {"id": "supabase_user", "authenticated": True}
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication check failed. Please sign in again.",

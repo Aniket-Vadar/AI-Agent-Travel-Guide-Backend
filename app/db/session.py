@@ -39,8 +39,14 @@ async def init_db() -> None:
     path = settings.sqlite_path
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with _engine.begin() as conn:
+            await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
+    except Exception as exc:
+        if "already exists" in str(exc).lower():
+            log.info("database_tables_exist", detail="Schema tables already exist.")
+        else:
+            raise
     log.info("database_ready", url=settings.database_url.split("///")[-1])
 
 

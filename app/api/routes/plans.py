@@ -1,7 +1,5 @@
 """Planning endpoints: generate a guide, stream one, and manage saved plans."""
 
-from __future__ import annotations
-
 import json
 
 from fastapi import APIRouter, Body, Depends, Query

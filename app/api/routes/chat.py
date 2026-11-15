@@ -1,7 +1,5 @@
 """The conversational intake endpoint."""
 
-from __future__ import annotations
-
 from fastapi import APIRouter, Body, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
