@@ -243,22 +243,22 @@ AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 async def get_audio(session: AsyncSession, story_id: str) -> bytes | None:
     """Fetch cached audio from disk or database."""
-    # 1. Fast disk cache check (only accept high-fidelity files > 22KB)
+    # 1. Fast disk cache check
     file_path = AUDIO_DIR / f"{story_id}.mp3"
     if file_path.exists():
         try:
             data = file_path.read_bytes()
-            if len(data) >= 22000:
+            if len(data) >= 1000:
                 return data
         except Exception:
             pass
 
-    # 2. Database check (only accept high-fidelity files > 22KB)
+    # 2. Database check
     try:
         stmt = select(StoryAudio).where(StoryAudio.story_id == story_id)
         result = await session.execute(stmt)
         record = result.scalar_one_or_none()
-        if record and record.audio_data and len(record.audio_data) >= 22000:
+        if record and record.audio_data and len(record.audio_data) >= 1000:
             try:
                 file_path.write_bytes(bytes(record.audio_data))
             except Exception:
@@ -270,29 +270,27 @@ async def get_audio(session: AsyncSession, story_id: str) -> bytes | None:
     return None
 
 
-async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
-    """Generate MP3 audio for a story via Google Voice API (or gTTS) and cache it."""
-    import base64
-    import httpx
-    from app.core.config import settings
-
-    # Check cache first
-    existing = await get_audio(session, story_id)
-    if existing:
-        return existing
-
-    async with _get_audio_lock(story_id):
-        # Double check cache inside lock
+async def generate_audio(session: AsyncSession, story_id: str, force_refresh: bool = False) -> bytes:
+    """Generate MP3 audio for a story via Google Voice API and cache it."""
+    # Check cache first if not forced
+    if not force_refresh:
         existing = await get_audio(session, story_id)
         if existing:
             return existing
+
+    async with _get_audio_lock(story_id):
+        # Double check cache inside lock
+        if not force_refresh:
+            existing = await get_audio(session, story_id)
+            if existing:
+                return existing
 
         # Get the story text
         story_record = await session.get(CityStory, story_id)
         if story_record is None:
             raise ValueError(f"Story {story_id} not found")
 
-        # Build narration text (~850-1050 chars: ideal for 1.5 min natural audio guide)
+        # Build narration text (~850-1050 chars: ideal for natural audio guide)
         narrative_pieces = []
         if story_record.title:
             narrative_pieces.append(f"{story_record.title}.")
@@ -320,38 +318,52 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
             full_text = full_text[:cutoff + 1] if cutoff > 350 else full_text[:1050]
 
         audio_bytes: bytes | None = None
+        country_lower = (story_record.country or "").lower()
 
-        # Option A: High-Fidelity Neural Studio Voice Engine (Documentary, warm audiobook pacing)
+        # Localized Google Voice regional settings for natural storytelling pronunciation:
+        if "india" in country_lower:
+            google_tld = "co.in"  # Official Google Voice for Indian destinations
+        elif any(c in country_lower for c in ("uk", "united kingdom", "britain", "england", "scotland")):
+            google_tld = "co.uk"  # British storytelling voice
+        elif any(c in country_lower for c in ("australia", "new zealand")):
+            google_tld = "com.au" # Australian voice
+        elif "canada" in country_lower:
+            google_tld = "ca"     # Canadian voice
+        else:
+            google_tld = "com"    # Standard global Google storytelling voice
+
+        # Option A: Authentic Google Voice Engine (gTTS with localized pronunciation)
         try:
-            import edge_tts
-            # Premium expressive voices: Neerja for Indian cities, Aria for global destinations
-            voice = "en-IN-NeerjaNeural" if "india" in (story_record.country or "").lower() else "en-US-AriaNeural"
-            log.info("generating_audio_via_neural_studio_voice", voice=voice, story_id=story_id)
-            communicate = edge_tts.Communicate(full_text, voice=voice, rate="-2%")
-            buf = bytearray()
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    buf.extend(chunk["data"])
-            if buf:
-                audio_bytes = bytes(buf)
-                log.info("neural_studio_voice_success", size=len(audio_bytes), voice=voice, story_id=story_id)
-        except Exception as e:
-            log.warning("neural_studio_voice_fallback", error=str(e))
-
-        # Option B: Fast Google Text-to-Speech (gTTS) emergency fallback
-        if not audio_bytes:
-            log.info("generating_audio_via_gtts_engine", story_id=story_id, text_len=len(full_text))
-            def _make_gtts() -> bytes:
+            log.info("generating_audio_via_google_voice", story_id=story_id, tld=google_tld, text_len=len(full_text))
+            def _synthesize_google_voice() -> bytes:
                 from gtts import gTTS
-                tts = gTTS(text=full_text, lang="en", tld="com", slow=False)
+                tts = gTTS(text=full_text, lang="en", tld=google_tld, slow=False)
                 buf = io.BytesIO()
                 tts.write_to_fp(buf)
                 return buf.getvalue()
 
+            audio_bytes = await asyncio.to_thread(_synthesize_google_voice)
+            if audio_bytes and len(audio_bytes) > 500:
+                log.info("google_voice_success", size=len(audio_bytes), tld=google_tld, story_id=story_id)
+        except Exception as e:
+            log.warning("google_voice_generation_failed", error=str(e), story_id=story_id)
+
+        # Option B: High-Fidelity Studio Voice Fallback (if Google Voice network times out)
+        if not audio_bytes:
             try:
-                audio_bytes = await asyncio.to_thread(_make_gtts)
+                import edge_tts
+                voice = "en-IN-NeerjaNeural" if "india" in country_lower else "en-US-AriaNeural"
+                log.info("generating_audio_via_studio_voice_fallback", voice=voice, story_id=story_id)
+                communicate = edge_tts.Communicate(full_text, voice=voice, rate="-2%")
+                buf = bytearray()
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        buf.extend(chunk["data"])
+                if buf:
+                    audio_bytes = bytes(buf)
+                    log.info("studio_voice_fallback_success", size=len(audio_bytes), voice=voice, story_id=story_id)
             except Exception as e:
-                log.warning("gtts_generation_failed", error=str(e), story_id=story_id)
+                log.warning("studio_voice_fallback_failed", error=str(e))
 
         if not audio_bytes:
             raise RuntimeError("Audio synthesis engine could not generate audio at this time")
@@ -363,20 +375,27 @@ async def generate_audio(session: AsyncSession, story_id: str) -> bytes:
         except Exception as e:
             log.warning("disk_cache_failed", error=str(e))
 
-        # 2. Persist to database safely
+        # 2. Persist to database safely (update existing or create new)
         try:
-            # Wrap bytes explicitly to prevent SQLite/aiosqlite memoryview interface errors
-            audio_record = StoryAudio(
-                story_id=story_id,
-                audio_data=bytes(audio_bytes),
-                size_bytes=len(audio_bytes),
-            )
-            session.add(audio_record)
+            stmt = select(StoryAudio).where(StoryAudio.story_id == story_id)
+            existing_audio = (await session.execute(stmt)).scalar_one_or_none()
+            if existing_audio:
+                existing_audio.audio_data = bytes(audio_bytes)
+                existing_audio.size_bytes = len(audio_bytes)
+            else:
+                audio_record = StoryAudio(
+                    story_id=story_id,
+                    audio_data=bytes(audio_bytes),
+                    size_bytes=len(audio_bytes),
+                )
+                session.add(audio_record)
             await session.commit()
         except Exception as db_err:
             log.warning("audio_db_persist_warning", error=str(db_err), story_id=story_id)
-            # Roll back failed transaction so session stays healthy
             await session.rollback()
+
+        log.info("audio_generated", story_id=story_id, size_bytes=len(audio_bytes))
+        return audio_bytes
 
         log.info("audio_generated", story_id=story_id, size_bytes=len(audio_bytes))
         return audio_bytes

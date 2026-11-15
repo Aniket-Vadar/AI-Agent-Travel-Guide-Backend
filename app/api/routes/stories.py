@@ -53,6 +53,7 @@ async def get_city_audio(
     request: Request,
     city: str,
     country: str = Query(default=""),
+    refresh: bool = Query(default=False),
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(require_auth_user),
 ):
@@ -64,11 +65,13 @@ async def get_city_audio(
 
     story_id = story["id"]
 
-    # Check for cached audio or generate
+    # Check for cached audio or generate via Google Voice
     try:
-        audio_bytes = await get_audio(session, story_id)
+        audio_bytes = None
+        if not refresh:
+            audio_bytes = await get_audio(session, story_id)
         if not audio_bytes:
-            audio_bytes = await generate_audio(session, story_id)
+            audio_bytes = await generate_audio(session, story_id, force_refresh=refresh)
     except Exception as e:
         log.error("get_city_audio_failed", city=city, error=str(e))
         from fastapi import HTTPException
