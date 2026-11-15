@@ -16,9 +16,9 @@ router = APIRouter(prefix="/guide", tags=["guide"])
 
 class PDFRequest(BaseModel):
     city: str = Field(..., min_length=1, max_length=120)
-    country: str = Field(default="India", max_length=80)
+    country: str | None = Field(default="India", max_length=80)
     days: int = Field(default=3, ge=1, le=21)
-    preferences: str = Field(default="", max_length=500)
+    preferences: str | None = Field(default="", max_length=500)
 
 
 @router.post("/pdf", summary="Generate a downloadable PDF travel guide")
@@ -29,14 +29,19 @@ async def download_pdf_guide(
     _user: dict = Depends(require_auth_user),
 ):
     """Generate a comprehensive PDF travel guide and return it as a downloadable file."""
+    target_city = payload.city.strip()
+    target_country = (payload.country or "India").strip()
+    target_days = payload.days or 3
+    target_pref = payload.preferences or ""
+
     pdf_bytes = await generate_pdf(
-        city=payload.city,
-        country=payload.country,
-        days=payload.days,
-        preferences=payload.preferences,
+        city=target_city,
+        country=target_country,
+        days=target_days,
+        preferences=target_pref,
     )
 
-    filename = f"{payload.city.replace(' ', '_')}_{payload.days}day_guide.pdf"
+    filename = f"{target_city.replace(' ', '_')}_{target_days}day_guide.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
