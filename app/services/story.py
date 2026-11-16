@@ -162,10 +162,28 @@ async def generate_story(session: AsyncSession, city: str, country: str = "") ->
 
         from langchain_core.messages import HumanMessage
 
+        fallback_story_json = json_mod.dumps({
+            "title": f"Discover {city_clean}",
+            "overview": (wiki_context.replace("\n\nWikipedia context: ", "").strip() if wiki_context else f"Nestled in {country_clean or 'one of the most fascinating regions'}, {city_clean} offers a tapestry of historical landmarks, rich cultural traditions, and unforgettable local flavors.")[:500],
+            "places": [
+                {"name": f"Historic Old Quarter of {city_clean}", "story": f"Wander through centuries-old streets, heritage architecture, and authentic local bazaars."},
+                {"name": f"{city_clean} Cultural Heritage Trail", "story": f"Discover the iconic landmarks and timeless traditions that define {city_clean}."},
+                {"name": f"Scenic Panorama of {city_clean}", "story": f"Enjoy spectacular golden hour views overlooking the cityscape."}
+            ],
+            "highlights": [
+                f"Historic walking trail across {city_clean}",
+                f"Savoring signature culinary specialties and local delicacies",
+                f"Exploring vibrant artisanal markets and neighborhood culture",
+                f"Scenic vantage points overlooking {city_clean}"
+            ],
+            "best_time": "October to March for pleasant temperatures and sightseeing."
+        })
+
         raw = await ainvoke_text(
             [HumanMessage(content=prompt)],
             pro=False,
             temperature=0.7,
+            fallback=fallback_story_json,
         )
 
         # Parse JSON response
